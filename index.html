@@ -105,10 +105,15 @@
         }
       };
 
+      const audioDestinationRef = useRef(null);
+
       const handleAudioUpload = async (e) => {
         const file = e.target.files[0];
         if (file) {
           const ctx = new (window.AudioContext || window.webkitAudioContext)();
+          // Create a destination for recording audio
+          const dest = ctx.createMediaStreamDestination();
+          audioDestinationRef.current = dest;
           setAudioContext(ctx);
           
           const arrayBuffer = await file.arrayBuffer();
@@ -126,6 +131,10 @@
         const source = audioContext.createBufferSource();
         source.buffer = audioBuffer;
         source.connect(audioContext.destination);
+        // Also connect to recording destination
+        if (audioDestinationRef.current) {
+          source.connect(audioDestinationRef.current);
+        }
         source.start(0, startTime, sliceDuration);
       }, [audioBuffer, audioContext, barCount]);
 
@@ -193,9 +202,23 @@
         chunksRef.current = [];
         setRecordingBlob(null);
         
-        const stream = canvas.captureStream(30);
-        const mediaRecorder = new MediaRecorder(stream, {
-          mimeType: 'video/webm;codecs=vp9',
+        // Get video stream from canvas
+        const videoStream = canvas.captureStream(30);
+        
+        // Combine video and audio streams
+        let combinedStream;
+        if (audioDestinationRef.current) {
+          const audioStream = audioDestinationRef.current.stream;
+          combinedStream = new MediaStream([
+            ...videoStream.getVideoTracks(),
+            ...audioStream.getAudioTracks()
+          ]);
+        } else {
+          combinedStream = videoStream;
+        }
+        
+        const mediaRecorder = new MediaRecorder(combinedStream, {
+          mimeType: 'video/webm;codecs=vp9,opus',
           videoBitsPerSecond: 5000000
         });
         
@@ -416,6 +439,10 @@
         const source = audioContext.createBufferSource();
         source.buffer = audioBuffer;
         source.connect(audioContext.destination);
+        // Also connect to recording destination
+        if (audioDestinationRef.current) {
+          source.connect(audioDestinationRef.current);
+        }
         source.start(0);
         
         const sliceDuration = (audioBuffer.duration * 1000) / bars.length;
