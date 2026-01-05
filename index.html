@@ -1,0 +1,704 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Meme Sort Visualizer</title>
+  <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    * { box-sizing: border-box; }
+    body { margin: 0; font-family: system-ui, -apple-system, sans-serif; }
+  </style>
+</head>
+<body>
+  <div id="root"></div>
+  
+  <script type="text/babel">
+    const { useState, useRef, useCallback, useEffect } = React;
+
+    const SORT_ALGORITHMS = {
+      bubble: 'Bubble Sort',
+      selection: 'Selection Sort',
+      insertion: 'Insertion Sort',
+      merge: 'Merge Sort',
+      quick: 'Quick Sort',
+    };
+
+    function MemeSortVisualizer() {
+      const [image, setImage] = useState(null);
+      const [imageAspectRatio, setImageAspectRatio] = useState(16 / 9);
+      const [audioBuffer, setAudioBuffer] = useState(null);
+      const [audioContext, setAudioContext] = useState(null);
+      const [barCount, setBarCount] = useState(32);
+      const [bars, setBars] = useState(() => shuffleArray(32));
+      const [sorting, setSorting] = useState(false);
+      const [algorithm, setAlgorithm] = useState('bubble');
+      const [speed, setSpeed] = useState(50);
+      const [activeIndices, setActiveIndices] = useState([]);
+      const [sortedIndices, setSortedIndices] = useState([]);
+      const [completed, setCompleted] = useState(false);
+      
+      const [isRecording, setIsRecording] = useState(false);
+      const [recordingBlob, setRecordingBlob] = useState(null);
+      const canvasRef = useRef(null);
+      const mediaRecorderRef = useRef(null);
+      const chunksRef = useRef([]);
+      const animationFrameRef = useRef(null);
+      
+      const fileInputRef = useRef(null);
+      const audioInputRef = useRef(null);
+      const sortingRef = useRef(false);
+      const stoppedRef = useRef(false);
+      const barsRef = useRef(bars);
+      const activeIndicesRef = useRef(activeIndices);
+
+      useEffect(() => {
+        barsRef.current = bars;
+      }, [bars]);
+
+      useEffect(() => {
+        activeIndicesRef.current = activeIndices;
+      }, [activeIndices]);
+
+      function shuffleArray(count) {
+        const arr = Array.from({ length: count }, (_, i) => i);
+        for (let i = arr.length - 1; i > 0; i--) {
+          const j = Math.floor(Math.random() * (i + 1));
+          [arr[i], arr[j]] = [arr[j], arr[i]];
+        }
+        return arr;
+      }
+
+      const initializeBars = () => {
+        setBars(shuffleArray(barCount));
+        setActiveIndices([]);
+        setSortedIndices([]);
+        setCompleted(false);
+        setRecordingBlob(null);
+      };
+
+      const handleBarCountChange = (newCount) => {
+        setBarCount(newCount);
+        setBars(shuffleArray(newCount));
+        setActiveIndices([]);
+        setSortedIndices([]);
+        setCompleted(false);
+        setRecordingBlob(null);
+      };
+
+      const handleImageUpload = (e) => {
+        const file = e.target.files[0];
+        if (file) {
+          const reader = new FileReader();
+          reader.onload = (event) => {
+            const img = new Image();
+            img.onload = () => {
+              setImage(img);
+              setImageAspectRatio(img.width / img.height);
+            };
+            img.src = event.target.result;
+          };
+          reader.readAsDataURL(file);
+        }
+      };
+
+      const handleAudioUpload = async (e) => {
+        const file = e.target.files[0];
+        if (file) {
+          const ctx = new (window.AudioContext || window.webkitAudioContext)();
+          setAudioContext(ctx);
+          
+          const arrayBuffer = await file.arrayBuffer();
+          const decoded = await ctx.decodeAudioData(arrayBuffer);
+          setAudioBuffer(decoded);
+        }
+      };
+
+      const playSlice = useCallback((sliceIndex) => {
+        if (!audioBuffer || !audioContext) return;
+        
+        const sliceDuration = audioBuffer.duration / barCount;
+        const startTime = sliceIndex * sliceDuration;
+        
+        const source = audioContext.createBufferSource();
+        source.buffer = audioBuffer;
+        source.connect(audioContext.destination);
+        source.start(0, startTime, sliceDuration);
+      }, [audioBuffer, audioContext, barCount]);
+
+      const delay = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+
+      const drawFrame = useCallback(() => {
+        const canvas = canvasRef.current;
+        if (!canvas || !image) return;
+        
+        const ctx = canvas.getContext('2d');
+        const currentBars = barsRef.current;
+        const currentActiveIndices = activeIndicesRef.current;
+        
+        ctx.fillStyle = '#ffffff';
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+        
+        const sliceWidth = canvas.width / currentBars.length;
+        const imgSliceWidth = image.width / currentBars.length;
+        
+        currentBars.forEach((value, index) => {
+          const srcX = value * imgSliceWidth;
+          const destX = index * sliceWidth;
+          
+          ctx.drawImage(
+            image,
+            srcX, 0, imgSliceWidth, image.height,
+            destX, 0, sliceWidth, canvas.height
+          );
+          
+          if (currentActiveIndices.includes(index)) {
+            ctx.fillStyle = 'rgba(255, 100, 100, 0.4)';
+            ctx.fillRect(destX, 0, sliceWidth, canvas.height);
+            ctx.strokeStyle = '#ff4444';
+            ctx.lineWidth = 3;
+            ctx.strokeRect(destX, 0, sliceWidth, canvas.height);
+          }
+        });
+      }, [image]);
+
+      const recordingLoop = useCallback(() => {
+        if (isRecording) {
+          drawFrame();
+          animationFrameRef.current = requestAnimationFrame(recordingLoop);
+        }
+      }, [isRecording, drawFrame]);
+
+      useEffect(() => {
+        if (isRecording) {
+          recordingLoop();
+        }
+        return () => {
+          if (animationFrameRef.current) {
+            cancelAnimationFrame(animationFrameRef.current);
+          }
+        };
+      }, [isRecording, recordingLoop]);
+
+      const startRecording = () => {
+        const canvas = canvasRef.current;
+        if (!canvas || !image) return;
+        
+        canvas.width = 1280;
+        canvas.height = Math.round(1280 / imageAspectRatio);
+        
+        chunksRef.current = [];
+        setRecordingBlob(null);
+        
+        const stream = canvas.captureStream(30);
+        const mediaRecorder = new MediaRecorder(stream, {
+          mimeType: 'video/webm;codecs=vp9',
+          videoBitsPerSecond: 5000000
+        });
+        
+        mediaRecorder.ondataavailable = (e) => {
+          if (e.data.size > 0) {
+            chunksRef.current.push(e.data);
+          }
+        };
+        
+        mediaRecorder.onstop = () => {
+          const blob = new Blob(chunksRef.current, { type: 'video/webm' });
+          setRecordingBlob(blob);
+        };
+        
+        mediaRecorderRef.current = mediaRecorder;
+        mediaRecorder.start(100);
+        setIsRecording(true);
+      };
+
+      const stopRecording = () => {
+        if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
+          mediaRecorderRef.current.stop();
+        }
+        setIsRecording(false);
+        if (animationFrameRef.current) {
+          cancelAnimationFrame(animationFrameRef.current);
+        }
+      };
+
+      const downloadVideo = () => {
+        if (!recordingBlob) return;
+        const url = URL.createObjectURL(recordingBlob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `meme-sort-${algorithm}-${Date.now()}.webm`;
+        a.click();
+        URL.revokeObjectURL(url);
+      };
+
+      const bubbleSort = async () => {
+        const arr = [...bars];
+        const n = arr.length;
+        
+        for (let i = 0; i < n - 1 && sortingRef.current; i++) {
+          for (let j = 0; j < n - i - 1 && sortingRef.current; j++) {
+            setActiveIndices([j, j + 1]);
+            playSlice(arr[j]);
+            
+            if (arr[j] > arr[j + 1]) {
+              [arr[j], arr[j + 1]] = [arr[j + 1], arr[j]];
+              setBars([...arr]);
+            }
+            
+            await delay(101 - speed);
+          }
+          setSortedIndices(prev => [...prev, n - 1 - i]);
+        }
+        setSortedIndices(Array.from({ length: n }, (_, i) => i));
+      };
+
+      const selectionSort = async () => {
+        const arr = [...bars];
+        const n = arr.length;
+        
+        for (let i = 0; i < n - 1 && sortingRef.current; i++) {
+          let minIdx = i;
+          
+          for (let j = i + 1; j < n && sortingRef.current; j++) {
+            setActiveIndices([minIdx, j]);
+            playSlice(arr[j]);
+            
+            if (arr[j] < arr[minIdx]) {
+              minIdx = j;
+            }
+            
+            await delay(101 - speed);
+          }
+          
+          if (minIdx !== i) {
+            [arr[i], arr[minIdx]] = [arr[minIdx], arr[i]];
+            setBars([...arr]);
+          }
+          setSortedIndices(prev => [...prev, i]);
+        }
+        setSortedIndices(Array.from({ length: n }, (_, i) => i));
+      };
+
+      const insertionSort = async () => {
+        const arr = [...bars];
+        const n = arr.length;
+        
+        for (let i = 1; i < n && sortingRef.current; i++) {
+          const key = arr[i];
+          let j = i - 1;
+          
+          while (j >= 0 && arr[j] > key && sortingRef.current) {
+            setActiveIndices([j, j + 1]);
+            playSlice(arr[j]);
+            
+            arr[j + 1] = arr[j];
+            setBars([...arr]);
+            j--;
+            
+            await delay(101 - speed);
+          }
+          arr[j + 1] = key;
+          setBars([...arr]);
+        }
+        setSortedIndices(Array.from({ length: n }, (_, i) => i));
+      };
+
+      const mergeSort = async () => {
+        const arr = [...bars];
+        
+        const merge = async (left, mid, right) => {
+          const leftArr = arr.slice(left, mid + 1);
+          const rightArr = arr.slice(mid + 1, right + 1);
+          
+          let i = 0, j = 0, k = left;
+          
+          while (i < leftArr.length && j < rightArr.length && sortingRef.current) {
+            setActiveIndices([left + i, mid + 1 + j]);
+            
+            if (leftArr[i] <= rightArr[j]) {
+              playSlice(leftArr[i]);
+              arr[k] = leftArr[i];
+              i++;
+            } else {
+              playSlice(rightArr[j]);
+              arr[k] = rightArr[j];
+              j++;
+            }
+            k++;
+            setBars([...arr]);
+            await delay(101 - speed);
+          }
+          
+          while (i < leftArr.length && sortingRef.current) {
+            playSlice(leftArr[i]);
+            arr[k] = leftArr[i];
+            i++;
+            k++;
+            setBars([...arr]);
+            await delay(101 - speed);
+          }
+          
+          while (j < rightArr.length && sortingRef.current) {
+            playSlice(rightArr[j]);
+            arr[k] = rightArr[j];
+            j++;
+            k++;
+            setBars([...arr]);
+            await delay(101 - speed);
+          }
+        };
+        
+        const sort = async (left, right) => {
+          if (left < right && sortingRef.current) {
+            const mid = Math.floor((left + right) / 2);
+            await sort(left, mid);
+            await sort(mid + 1, right);
+            await merge(left, mid, right);
+          }
+        };
+        
+        await sort(0, arr.length - 1);
+        setSortedIndices(Array.from({ length: arr.length }, (_, i) => i));
+      };
+
+      const quickSort = async () => {
+        const arr = [...bars];
+        
+        const partition = async (low, high) => {
+          const pivot = arr[high];
+          let i = low - 1;
+          
+          for (let j = low; j < high && sortingRef.current; j++) {
+            setActiveIndices([j, high]);
+            playSlice(arr[j]);
+            
+            if (arr[j] < pivot) {
+              i++;
+              [arr[i], arr[j]] = [arr[j], arr[i]];
+              setBars([...arr]);
+            }
+            
+            await delay(101 - speed);
+          }
+          
+          [arr[i + 1], arr[high]] = [arr[high], arr[i + 1]];
+          setBars([...arr]);
+          return i + 1;
+        };
+        
+        const sort = async (low, high) => {
+          if (low < high && sortingRef.current) {
+            const pi = await partition(low, high);
+            await sort(low, pi - 1);
+            await sort(pi + 1, high);
+          }
+        };
+        
+        await sort(0, arr.length - 1);
+        setSortedIndices(Array.from({ length: arr.length }, (_, i) => i));
+      };
+
+      const playSweep = async () => {
+        if (!audioBuffer || !audioContext) {
+          for (let i = 0; i < bars.length; i++) {
+            setActiveIndices([i]);
+            await delay(50);
+          }
+          setActiveIndices([]);
+          setCompleted(true);
+          return;
+        }
+        
+        const source = audioContext.createBufferSource();
+        source.buffer = audioBuffer;
+        source.connect(audioContext.destination);
+        source.start(0);
+        
+        const sliceDuration = (audioBuffer.duration * 1000) / bars.length;
+        
+        for (let i = 0; i < bars.length; i++) {
+          setActiveIndices([i]);
+          await delay(sliceDuration);
+        }
+        
+        setActiveIndices([]);
+        setCompleted(true);
+      };
+
+      const startSort = async () => {
+        if (sorting) return;
+        
+        setSorting(true);
+        sortingRef.current = true;
+        stoppedRef.current = false;
+        setActiveIndices([]);
+        setSortedIndices([]);
+        setCompleted(false);
+        setRecordingBlob(null);
+        
+        if (image) {
+          startRecording();
+        }
+        
+        if (audioContext?.state === 'suspended') {
+          await audioContext.resume();
+        }
+        
+        switch (algorithm) {
+          case 'bubble': await bubbleSort(); break;
+          case 'selection': await selectionSort(); break;
+          case 'insertion': await insertionSort(); break;
+          case 'merge': await mergeSort(); break;
+          case 'quick': await quickSort(); break;
+        }
+        
+        if (sortingRef.current && !stoppedRef.current) {
+          await playSweep();
+        }
+        
+        setTimeout(() => {
+          if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
+            stopRecording();
+          }
+        }, 300);
+        
+        setSorting(false);
+        sortingRef.current = false;
+        setActiveIndices([]);
+      };
+
+      const stopSort = () => {
+        sortingRef.current = false;
+        stoppedRef.current = true;
+        setSorting(false);
+        setActiveIndices([]);
+        if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
+          stopRecording();
+        }
+      };
+
+      const renderBar = (value, index) => {
+        const isActive = activeIndices.includes(index);
+        const isSorted = sortedIndices.includes(index);
+        
+        return (
+          <div
+            key={index}
+            className="relative overflow-hidden transition-all duration-75"
+            style={{
+              flex: 1,
+              height: '100%',
+              background: !image 
+                ? (isActive 
+                    ? '#ff6b6b' 
+                    : isSorted 
+                      ? '#51cf66' 
+                      : completed 
+                        ? '#ffd43b' 
+                        : '#4c6ef5')
+                : 'transparent',
+              boxShadow: isActive ? '0 0 10px rgba(255, 100, 100, 0.8)' : 'none',
+              outline: isActive ? '3px solid #ff4444' : 'none',
+              zIndex: isActive ? 10 : 1,
+            }}
+          >
+            {image && (
+              <div
+                className="absolute inset-0"
+                style={{
+                  backgroundImage: `url(${image.src})`,
+                  backgroundSize: `${barCount * 100}% 100%`,
+                  backgroundPosition: `${(value / (barCount - 1)) * 100}% 0`,
+                  backgroundRepeat: 'no-repeat',
+                  filter: isActive 
+                    ? 'brightness(1.3) saturate(1.2)' 
+                    : 'brightness(1)',
+                }}
+              />
+            )}
+            {!image && (
+              <div className="absolute inset-0 flex items-center justify-center">
+                <span className="text-white text-xs font-bold opacity-70">
+                  {value}
+                </span>
+              </div>
+            )}
+          </div>
+        );
+      };
+
+      const containerPaddingBottom = `${(1 / imageAspectRatio) * 100}%`;
+
+      return (
+        <div className="min-h-screen bg-white p-6">
+          <div className="max-w-4xl mx-auto">
+            <div className="text-center mb-8">
+              <h1 className="text-3xl font-bold text-gray-900 mb-2">
+                Meme Sort Visualizer
+              </h1>
+              <p className="text-gray-500 text-sm">
+                Upload a meme sound & image → Watch them get sorted!
+              </p>
+            </div>
+
+            <div className="grid grid-cols-2 gap-4 mb-6">
+              <div 
+                onClick={() => audioInputRef.current?.click()}
+                className="border-2 border-dashed border-gray-300 rounded-xl p-6 cursor-pointer hover:border-blue-400 hover:bg-blue-50 transition-all"
+              >
+                <input
+                  ref={audioInputRef}
+                  type="file"
+                  accept="audio/*"
+                  onChange={handleAudioUpload}
+                  className="hidden"
+                />
+                <div className="text-center">
+                  <div className="text-3xl mb-2">🎵</div>
+                  <p className="text-gray-700 font-medium text-sm">
+                    {audioBuffer ? '✓ Audio Loaded' : 'Upload Sound'}
+                  </p>
+                </div>
+              </div>
+
+              <div 
+                onClick={() => fileInputRef.current?.click()}
+                className="border-2 border-dashed border-gray-300 rounded-xl p-6 cursor-pointer hover:border-blue-400 hover:bg-blue-50 transition-all"
+              >
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  accept="image/*"
+                  onChange={handleImageUpload}
+                  className="hidden"
+                />
+                <div className="text-center">
+                  <div className="text-3xl mb-2">🖼️</div>
+                  <p className="text-gray-700 font-medium text-sm">
+                    {image ? '✓ Image Loaded' : 'Upload Image'}
+                  </p>
+                </div>
+              </div>
+            </div>
+
+            <div className="bg-gray-50 rounded-xl p-4 mb-6 flex flex-wrap gap-4 items-center justify-center">
+              <select
+                value={algorithm}
+                onChange={(e) => setAlgorithm(e.target.value)}
+                disabled={sorting}
+                className="bg-white text-gray-800 px-4 py-2 rounded-lg border border-gray-300 focus:border-blue-500 outline-none text-sm"
+              >
+                {Object.entries(SORT_ALGORITHMS).map(([key, name]) => (
+                  <option key={key} value={key}>{name}</option>
+                ))}
+              </select>
+
+              <div className="flex items-center gap-2">
+                <span className="text-gray-600 text-sm">Slices:</span>
+                <input
+                  type="range"
+                  min="8"
+                  max="64"
+                  value={barCount}
+                  onChange={(e) => handleBarCountChange(Number(e.target.value))}
+                  disabled={sorting}
+                  className="w-20 accent-blue-500"
+                />
+                <span className="text-blue-600 text-sm font-medium w-6">{barCount}</span>
+              </div>
+
+              <div className="flex items-center gap-2">
+                <span className="text-gray-600 text-sm">Speed:</span>
+                <input
+                  type="range"
+                  min="1"
+                  max="100"
+                  value={speed}
+                  onChange={(e) => setSpeed(Number(e.target.value))}
+                  className="w-20 accent-blue-500"
+                />
+                <span className="text-blue-600 text-sm font-medium w-8">{speed}%</span>
+              </div>
+
+              <button
+                onClick={startSort}
+                disabled={sorting}
+                className="px-5 py-2 bg-blue-500 text-white rounded-lg font-medium hover:bg-blue-600 disabled:opacity-50 disabled:cursor-not-allowed transition-all text-sm"
+              >
+                ▶ Sort
+              </button>
+
+              <button
+                onClick={stopSort}
+                disabled={!sorting}
+                className="px-5 py-2 bg-red-500 text-white rounded-lg font-medium hover:bg-red-600 disabled:opacity-50 disabled:cursor-not-allowed transition-all text-sm"
+              >
+                ■ Stop
+              </button>
+
+              <button
+                onClick={initializeBars}
+                disabled={sorting}
+                className="px-5 py-2 bg-gray-500 text-white rounded-lg font-medium hover:bg-gray-600 disabled:opacity-50 disabled:cursor-not-allowed transition-all text-sm"
+              >
+                ↻ Shuffle
+              </button>
+            </div>
+
+            {isRecording && (
+              <div className="flex items-center justify-center gap-2 mb-4">
+                <div className="w-3 h-3 bg-red-500 rounded-full animate-pulse"></div>
+                <span className="text-red-500 text-sm font-medium">Recording...</span>
+              </div>
+            )}
+
+            <div className="bg-white rounded-xl border border-gray-200 overflow-hidden shadow-sm">
+              <div 
+                className="relative w-full"
+                style={{ paddingBottom: containerPaddingBottom }}
+              >
+                <div className="absolute inset-0 flex">
+                  {bars.map((value, index) => renderBar(value, index))}
+                </div>
+              </div>
+              
+              {completed && (
+                <div className="text-center py-3 bg-green-50 border-t border-green-100">
+                  <span className="text-green-600 font-medium">✓ Sorted! Original Restored!</span>
+                </div>
+              )}
+            </div>
+
+            {recordingBlob && (
+              <div className="mt-4 text-center">
+                <button
+                  onClick={downloadVideo}
+                  className="px-6 py-3 bg-green-500 text-white rounded-lg font-medium hover:bg-green-600 transition-all text-sm inline-flex items-center gap-2"
+                >
+                  ⬇ Download Video (.webm)
+                </button>
+              </div>
+            )}
+
+            <canvas 
+              ref={canvasRef} 
+              className="hidden"
+            />
+
+            <div className="mt-6 text-center text-gray-500 text-xs">
+              <p>Image & audio are sliced and 1:1 mapped. Sorting restores the original!</p>
+            </div>
+          </div>
+        </div>
+      );
+    }
+
+    const root = ReactDOM.createRoot(document.getElementById('root'));
+    root.render(<MemeSortVisualizer />);
+  </script>
+</body>
+</html>
